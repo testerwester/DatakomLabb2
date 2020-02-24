@@ -4,6 +4,11 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+#include <stdio.h>
+
+/*  Online resources */
+// Colored font: http://web.theurbanpenguin.com/adding-color-to-your-output-from-c/
 
 /*      Function declarations       */
 
@@ -11,6 +16,9 @@ struct pkt create_packet(int *seq, int *ack, struct msg *message);
 bool is_corrupted(struct pkt packet);
 int get_checksum(struct pkt packet);
 void printResult(int type, char *message, char *data);
+float calcRTT(float estRTT, clock_t sampRTT);
+float calc_devRTT(float sampRTT);
+float calc_TimeoutInterval(clock_t sampRTT);
 
 /*      Global variables    */
 int SEQ;
@@ -19,10 +27,37 @@ int ACK;
 struct pkt a_packet;
 struct pkt b_packet;
 
+clock_t sampleRTT;
+float estimatedRTT;
+float devRTT;
+
 /*      Constants       */
 #define A_SENDER 0
 #define B_RECEIVER 1
+#define BUFF_SIZE 100
+#define RTT_BASE 0.125 //Lower value to quickly react to changes on network - Higher, slower react/change
+#define RTT_START_VAL 10 //high start value in order to work with slow connections from start
 
+
+/*  Calculates est RTT based on the sample RTT, RTT BASE and current est RTT    */
+float calcRTT(float estRTT, clock_t sampRTT)
+{
+    float sample = (double)sampRTT / CLOCKS_PER_SEC;
+    return (((1 - RTT_BASE)*estRTT) + (RTT_BASE * sample));
+}
+
+float calc_devRTT(float sampRTT)
+{
+    float variation = 0.25;
+    float result = (((1-variation) * devRTT) + (variation * abs(sampleRTT - estimatedRTT)));
+    return result;
+}
+
+float calc_TimeoutInterval(clock_t sampRTT)
+{
+    float sample = ((float)sampRTT / CLOCKS_PER_SEC);
+    return estimatedRTT + 4*(calc_devRTT(sample));
+}
 
 /* called from layer 5, passed the data to be sent to other side */
 void A_output( struct msg message)
@@ -30,12 +65,18 @@ void A_output( struct msg message)
     if(!A_IS_BUSY)
     {
         A_IS_BUSY = true;
-        a_packet = create_packet(&SEQ, NULL, &message);
         printResult(true, "A_output: Sending packet: ", message.data);
+        a_packet = create_packet(&SEQ, NULL, &message);
+        
 
         tolayer3(A_SENDER, a_packet);
-        starttimer(A_SENDER, 20);
+        starttimer(A_SENDER, estimatedRTT);
+        sampleRTT = clock();
+    }else
+    {
+        printResult(false, "A_output dropped package: ", message.data);
     }
+    
 }
 
 /* Dynamically creates packet for a and b side. Where any input var can be NULL in order to set a generic message there */
@@ -53,11 +94,10 @@ struct pkt create_packet(int *seq, int *ack, struct msg *message)
 /*  Calculates checksum and returns value as an int */
 int get_checksum(struct pkt packet)
 {
-    int checksum = 0;
+    int checksum = (packet.acknum + packet.seqnum);
     int i = 0;
-    checksum = (packet.acknum + packet.seqnum);
     
-    for(i = 0; i<20; i++)
+    for(i = 0; i<sizeof(packet.payload); i++)
     {
         checksum += packet.payload[i];
     }
@@ -77,21 +117,18 @@ If type == false, red text
 Data can be NUll in order to only use var message   */
 void printResult(int type, char *message, char *data)
 {
-    static char output[100]; 
-    memset(output, 0, 100);
+    static char output[BUFF_SIZE]; 
+    memset(output, 0, BUFF_SIZE);
 
     strcpy(output, message);
     if(type){
         printf("\033[0;32m"); //Sets font color to green
     }else printf("\033[0;31m"); //Sets font color to red
     
-    if(data != NULL)
-    {
-        strcat(output, data);
-    }
+    if(data != NULL) strcat(output, data);
+
     printf("%s\n", output);
     
-
     printf("\033[0m"); //resets font color
 }
 
@@ -106,9 +143,11 @@ void A_input(struct pkt packet)
         stoptimer(A_SENDER);
         printResult(true, "A_input: Ack accepted", NULL);
         SEQ = (++SEQ % 2); //Increments SEQ :)
-        printf("SEQ is now: %i\n", SEQ);
         
         A_IS_BUSY = false;
+
+        sampleRTT = clock() - sampleRTT;
+        estimatedRTT = calcRTT(estimatedRTT, sampleRTT);
     }
     else if(is_corrupted(packet))
     {
@@ -126,7 +165,9 @@ void A_timerinterrupt()
 {
     printResult(true, "A_interrupt: Resending packet: ", a_packet.payload);
     tolayer3(A_SENDER, a_packet);
-    starttimer(A_SENDER, 20);
+    
+    sampleRTT = clock() - sampleRTT; //retakes sample RTT one last time before
+    starttimer(A_SENDER, calc_TimeoutInterval(sampleRTT));
 }  
 
 
@@ -140,7 +181,6 @@ void B_input(struct pkt packet)
         tolayer5(B_RECEIVER, packet.payload);
         tolayer3(B_RECEIVER, b_packet);
         ACK = (++ACK % 2);
-        printf("ACK IS now: %i\n", ACK);
 
     }else if(is_corrupted(packet))
     {
@@ -161,16 +201,17 @@ void B_init()
 {
     printf("B_init running\n");
     /* Sets ack to 1 so that first ACK will work for either correct or not correct seq value*/
+    /*  Initiates a 0-message in order to fill the payload of the paket with certain values. */
     ACK = 1; // 
-    b_packet = create_packet(NULL, &ACK, NULL);
+    struct msg nullMessage;
+    for(int i = 0; i<sizeof(struct msg); i++)
+    {
+        nullMessage.data[i] = 0;
+    }
+    b_packet = create_packet(NULL, &ACK, &nullMessage);
 
     /*  Restores ACK to correct init_value */
     ACK = 0;
-
-    for(int i = 0; i<sizeof(struct msg); i++)
-    {
-        b_packet.payload[i] = 0;
-    }
 }
 
 
@@ -181,6 +222,9 @@ void A_init()
     printf("A_init running\n");
     A_IS_BUSY = false;
     SEQ = 0;
+
+    estimatedRTT = RTT_START_VAL; // Inits est RTT for first round without inputs
+    devRTT = RTT_START_VAL;
 }
 
 
