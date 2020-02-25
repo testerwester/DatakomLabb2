@@ -37,6 +37,7 @@ float devRTT;
 #define B_RECEIVER 1
 #define BUFF_SIZE 100
 #define RTT_BASE 0.125 //Lower value to quickly react to changes on network - Higher, slower react/change
+#define RTT_VARIATION 0.25
 #define RTT_START_VAL 10 //high start value in order to work with slow connections from start
 
 
@@ -49,8 +50,7 @@ float calcRTT(float estRTT, clock_t sampRTT)
 
 float calc_devRTT(float sampRTT)
 {
-    float variation = 0.25;
-    devRTT = ((((1-variation) * devRTT)) + (variation * fabs(sampRTT - estimatedRTT)));
+    devRTT = ((((1-RTT_VARIATION) * devRTT)) + (RTT_VARIATION * fabs(sampRTT - estimatedRTT)));
     return devRTT;
 }
 
@@ -225,7 +225,7 @@ void A_init()
     SEQ = 0;
 
     estimatedRTT = RTT_START_VAL; // Inits est RTT for first round without inputs
-    devRTT = 5;
+    devRTT = RTT_START_VAL/2;
 }
 
 
