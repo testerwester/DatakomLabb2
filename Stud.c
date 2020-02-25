@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <stdio.h>
+#include <math.h>
 
 /*  Online resources */
 // Colored font: http://web.theurbanpenguin.com/adding-color-to-your-output-from-c/
@@ -49,8 +50,8 @@ float calcRTT(float estRTT, clock_t sampRTT)
 float calc_devRTT(float sampRTT)
 {
     float variation = 0.25;
-    float result = (((1-variation) * devRTT) + (variation * abs(sampleRTT - estimatedRTT)));
-    return result;
+    devRTT = ((((1-variation) * devRTT)) + (variation * fabs(sampRTT - estimatedRTT)));
+    return devRTT;
 }
 
 float calc_TimeoutInterval(clock_t sampRTT)
@@ -166,8 +167,8 @@ void A_timerinterrupt()
     printResult(true, "A_interrupt: Resending packet: ", a_packet.payload);
     tolayer3(A_SENDER, a_packet);
     
-    sampleRTT = clock() - sampleRTT; //retakes sample RTT one last time before
-    starttimer(A_SENDER, calc_TimeoutInterval(sampleRTT));
+    float timeoutinterval = calc_TimeoutInterval(sampleRTT);
+    starttimer(A_SENDER, timeoutinterval);
 }  
 
 
@@ -224,7 +225,7 @@ void A_init()
     SEQ = 0;
 
     estimatedRTT = RTT_START_VAL; // Inits est RTT for first round without inputs
-    devRTT = RTT_START_VAL;
+    devRTT = 5;
 }
 
 
